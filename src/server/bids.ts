@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { getAiService } from "@/lib/ai";
 import type { ExtractedTender } from "@/lib/ai";
 import { assertProfessional } from "./plan";
@@ -89,16 +90,100 @@ function statusFromDocs(documents: BidDocument[]): Bid["status"] {
     : "drafted";
 }
 
+/**
+ * Bids are persisted to Postgres (`workspace_bids`) when a database is reachable
+ * so generated bids survive across serverless instances (each Vercel route is a
+ * separate function with its own in-memory store). The in-memory store is the
+ * fallback for local no-DB runs. Both paths are tenant-scoped by companyId.
+ */
+async function getPrisma() {
+  const { prisma } = await import("@/lib/prisma");
+  return prisma;
+}
+
+type PrismaLike = Awaited<ReturnType<typeof getPrisma>>;
+
+/** A persisted bid row, mapped back to the runtime `Bid` shape. */
+function rowToBid(row: {
+  id: string;
+  companyId: string;
+  tenderId: string;
+  tenderTitle: string;
+  status: string;
+  documents: Prisma.JsonValue;
+  createdAt: string;
+  submittedAt: string | null;
+}): Bid {
+  return {
+    id: row.id,
+    tenderId: row.tenderId,
+    tenderTitle: row.tenderTitle,
+    companyId: row.companyId,
+    status: row.status as Bid["status"],
+    documents: row.documents as unknown as BidDocument[],
+    createdAt: row.createdAt,
+    submittedAt: row.submittedAt ?? undefined,
+  };
+}
+
+/** The runtime `Bid` mapped to a `workspace_bids` write payload. */
+function bidToData(bid: Bid) {
+  return {
+    id: bid.id,
+    companyId: bid.companyId,
+    tenderId: bid.tenderId,
+    tenderTitle: bid.tenderTitle,
+    status: bid.status,
+    documents: bid.documents as unknown as Prisma.InputJsonValue,
+    createdAt: bid.createdAt,
+    submittedAt: bid.submittedAt ?? null,
+  };
+}
+
+/**
+ * Provision the demo seed bids into the DB for a company on first access, so a
+ * new account's bids list looks populated (§11). Seed ids are namespaced per
+ * company to stay globally unique; `skipDuplicates` makes this idempotent and
+ * race-safe.
+ */
+async function ensureDbSeed(prisma: PrismaLike, companyId: string) {
+  const count = await prisma.workspaceBid.count({ where: { companyId } });
+  if (count > 0) return;
+  const seeded = ensureCompanyBids(companyId).map((b) =>
+    bidToData({ ...b, id: `${b.id}-${companyId}` }),
+  );
+  if (seeded.length) {
+    await prisma.workspaceBid.createMany({ data: seeded, skipDuplicates: true });
+  }
+}
+
 export async function listBids(): Promise<Bid[]> {
   const companyId = await getActiveCompanyId();
-  return [...ensureCompanyBids(companyId)].sort((a, b) =>
-    b.createdAt.localeCompare(a.createdAt),
-  );
+  try {
+    const prisma = await getPrisma();
+    await ensureDbSeed(prisma, companyId);
+    const rows = await prisma.workspaceBid.findMany({
+      where: { companyId },
+      orderBy: { createdAt: "desc" },
+    });
+    return rows.map(rowToBid);
+  } catch {
+    return [...ensureCompanyBids(companyId)].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
+  }
 }
 
 export async function getBid(id: string): Promise<Bid | null> {
   const companyId = await getActiveCompanyId();
-  return ensureCompanyBids(companyId).find((b) => b.id === id) ?? null;
+  try {
+    const prisma = await getPrisma();
+    await ensureDbSeed(prisma, companyId);
+    const row = await prisma.workspaceBid.findFirst({ where: { id, companyId } });
+    return row ? rowToBid(row) : null;
+  } catch {
+    return ensureCompanyBids(companyId).find((b) => b.id === id) ?? null;
+  }
 }
 
 /** Create a bid pack from a tender (Professional only). */
@@ -121,13 +206,21 @@ export async function createBidFromTender(tenderId: string): Promise<Bid> {
     documents,
     createdAt: new Date().toISOString().slice(0, 10),
   };
-  ensureCompanyBids(companyId).push(bid);
+
+  try {
+    const prisma = await getPrisma();
+    await ensureDbSeed(prisma, companyId);
+    await prisma.workspaceBid.create({ data: bidToData(bid) });
+  } catch {
+    ensureCompanyBids(companyId).push(bid);
+  }
   return bid;
 }
 
 /** Re-run AI drafting for a bid's generated sections (Professional only). */
 export async function regenerateBid(id: string): Promise<Bid | null> {
   assertProfessional();
+  const companyId = await getActiveCompanyId();
   const bid = await getBid(id);
   if (!bid) return null;
   const tender = await getTender(bid.tenderId);
@@ -136,12 +229,24 @@ export async function regenerateBid(id: string): Promise<Bid | null> {
   const fresh = await buildBidPack(tender, await getActiveCompany());
   const freshByType = new Map(fresh.map((d) => [d.type, d]));
   // Refresh AI-generated text but keep any uploaded certificates.
-  bid.documents = bid.documents.map((d) =>
+  const documents = bid.documents.map((d) =>
     d.status === "ai_generated" && freshByType.has(d.type)
       ? { ...d, content: freshByType.get(d.type)!.content }
       : d,
   );
-  return bid;
+  const updated: Bid = { ...bid, documents };
+
+  try {
+    const prisma = await getPrisma();
+    await prisma.workspaceBid.update({
+      where: { id },
+      data: { documents: documents as unknown as Prisma.InputJsonValue },
+    });
+  } catch {
+    const mem = ensureCompanyBids(companyId).find((b) => b.id === id);
+    if (mem) mem.documents = documents;
+  }
+  return updated;
 }
 
 export interface UpdateBidInput {
@@ -153,14 +258,38 @@ export async function updateBid(
   id: string,
   input: UpdateBidInput,
 ): Promise<Bid | null> {
+  const companyId = await getActiveCompanyId();
   const bid = await getBid(id);
   if (!bid) return null;
-  if (input.documents) bid.documents = input.documents;
+
+  const documents = input.documents ?? bid.documents;
+  let status = bid.status;
+  let submittedAt = bid.submittedAt;
   if (input.status) {
-    bid.status = input.status;
+    status = input.status;
     if (input.status === "submitted") {
-      bid.submittedAt = new Date().toISOString().slice(0, 10);
+      submittedAt = new Date().toISOString().slice(0, 10);
     }
   }
-  return bid;
+  const updated: Bid = { ...bid, documents, status, submittedAt };
+
+  try {
+    const prisma = await getPrisma();
+    await prisma.workspaceBid.update({
+      where: { id },
+      data: {
+        documents: documents as unknown as Prisma.InputJsonValue,
+        status,
+        submittedAt: submittedAt ?? null,
+      },
+    });
+  } catch {
+    const mem = ensureCompanyBids(companyId).find((b) => b.id === id);
+    if (mem) {
+      mem.documents = documents;
+      mem.status = status;
+      mem.submittedAt = submittedAt;
+    }
+  }
+  return updated;
 }

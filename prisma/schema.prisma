@@ -193,3 +193,22 @@ model Supplier {
 
   @@map("suppliers")
 }
+
+// Denormalized per-company bid pack, persisted so generated bids survive across
+// serverless instances (each Vercel route is its own function with its own
+// in-memory store). Mirrors the runtime `Bid` shape 1:1; `documents` holds the
+// BidDocument[] as jsonb. Used when a database is available; the in-memory store
+// is the fallback for local no-DB runs.
+model WorkspaceBid {
+  id          String   @id
+  companyId   String   @map("company_id")
+  tenderId    String   @map("tender_id")
+  tenderTitle String   @map("tender_title")
+  status      String
+  documents   Json
+  createdAt   String   @map("created_at")
+  submittedAt String?  @map("submitted_at")
+
+  @@index([companyId])
+  @@map("workspace_bids")
+}
