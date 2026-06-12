@@ -1,0 +1,195 @@
+// TendX data model (Build Spec section 7).
+// PostgreSQL via Prisma. jsonb columns hold the document-store payloads
+// (section 7.2) in the MVP. pgvector for embeddings is added in Phase 1.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Pooled connection for the serverless app (Neon pooler).
+  url       = env("DATABASE_URL")
+  // Direct connection for migrations / introspection (Neon direct).
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  owner
+  member
+  admin
+}
+
+enum Plan {
+  free
+  professional
+  enterprise
+}
+
+enum BuyerType {
+  federal
+  provincial
+  military
+  soe
+  private
+}
+
+enum BidStatus {
+  drafted
+  win_ready
+  missing_docs
+  under_review
+  submitted
+}
+
+enum BidDocumentType {
+  cover_letter
+  technical_proposal
+  financial_bid
+  compliance_checklist
+  certificate
+}
+
+enum BidDocumentStatus {
+  ai_generated
+  drafted
+  ready
+  missing
+}
+
+enum SupplierOrigin {
+  local
+  import
+}
+
+model Company {
+  id                 String   @id @default(uuid()) @map("company_id")
+  legalName          String   @map("legal_name")
+  ntn                String?
+  gstReg             String?  @map("gst_reg")
+  ppraRegStatus      String?  @map("ppra_reg_status")
+  turnoverByYear     Json?    @map("turnover_by_year")
+  certifications     Json?
+  categoryExperience Json?    @map("category_experience")
+  city               String?
+  province           String?
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  users         User[]
+  subscriptions Subscription[]
+  matches       TenderMatch[]
+  bids          Bid[]
+
+  @@map("companies")
+}
+
+model User {
+  id           String   @id @default(uuid()) @map("user_id")
+  companyId    String?  @map("company_id")
+  name         String
+  email        String   @unique
+  role         Role     @default(owner)
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  company Company? @relation(fields: [companyId], references: [id])
+
+  @@map("users")
+}
+
+model Subscription {
+  id               String    @id @default(uuid()) @map("sub_id")
+  companyId        String    @map("company_id")
+  plan             Plan      @default(free)
+  status           String    @default("active")
+  currentPeriodEnd DateTime? @map("current_period_end")
+  billingRef       String?   @map("billing_ref")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@map("subscriptions")
+}
+
+model Tender {
+  id          String    @id @default(uuid()) @map("tender_id")
+  sourcePortal String?  @map("source_portal")
+  title       String
+  buyer       String?
+  sector      String?
+  category    String?
+  valuePkr    BigInt?   @map("value_pkr")
+  city        String?
+  province    String?
+  buyerType   BuyerType? @map("buyer_type")
+  publishedAt DateTime? @map("published_at")
+  closesAt    DateTime? @map("closes_at")
+  refNo       String?   @map("ref_no")
+  // Document-store payload (Build Spec section 7.2): raw_text, sections, extracted, attachments.
+  doc         Json?     @map("doc_ref")
+  rawUrl      String?   @map("raw_url")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  matches TenderMatch[]
+
+  @@map("tenders")
+}
+
+model TenderMatch {
+  id          String   @id @default(uuid()) @map("match_id")
+  tenderId    String   @map("tender_id")
+  companyId   String   @map("company_id")
+  score       Decimal
+  // Array of { criterion, status, detail } (Build Spec section 7.1).
+  eligibility Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  tender  Tender  @relation(fields: [tenderId], references: [id])
+  company Company @relation(fields: [companyId], references: [id])
+  bids    Bid[]
+
+  @@unique([tenderId, companyId])
+  @@map("tender_matches")
+}
+
+model Bid {
+  id          String    @id @default(uuid()) @map("bid_id")
+  matchId     String    @map("match_id")
+  companyId   String    @map("company_id")
+  status      BidStatus @default(drafted)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  submittedAt DateTime? @map("submitted_at")
+
+  match     TenderMatch   @relation(fields: [matchId], references: [id])
+  company   Company       @relation(fields: [companyId], references: [id])
+  documents BidDocument[]
+
+  @@map("bids")
+}
+
+model BidDocument {
+  id         String            @id @default(uuid()) @map("document_id")
+  bidId      String            @map("bid_id")
+  type       BidDocumentType
+  status     BidDocumentStatus
+  storageUrl String?           @map("storage_url")
+  // Generated-bid content payload (Build Spec section 7.2).
+  content    Json?             @map("content_ref")
+
+  bid Bid @relation(fields: [bidId], references: [id])
+
+  @@map("bid_documents")
+}
+
+model Supplier {
+  id         String         @id @default(uuid()) @map("supplier_id")
+  name       String
+  origin     SupplierOrigin
+  categories Json?
+  unitCosts  Json?          @map("unit_costs")
+  location   String?
+
+  @@map("suppliers")
+}

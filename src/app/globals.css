@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* TendX color tokens (Build Spec section 4.1).
+   Stored as space-separated RGB channels so Tailwind opacity modifiers
+   (e.g. bg-green/12, text-white/70) work via rgb(var(--token) / <alpha>). */
+:root {
+  --navy: 10 37 64;
+  --navy2: 15 48 86;
+  --navy3: 16 58 102;
+  --ink: 11 27 43;
+  --teal: 18 181 165;
+  --teal2: 14 158 144;
+  --mint: 43 217 192;
+  --gold: 245 184 46;
+  --gold2: 255 211 107;
+  --slate: 100 118 138;
+  --line: 231 237 243;
+  --bg: 244 247 250;
+  --cloud: 234 241 248;
+  --white: 255 255 255;
+  --green: 31 169 113;
+  --red: 229 72 77;
+}
+
+body {
+  color: rgb(var(--ink));
+  background: rgb(var(--bg));
+  font-family: var(--font-ibm-plex-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Headings and display use Sora (Build Spec section 4.2) */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-sora), ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  /* Uppercase meta labels: 12.5px with letter-spacing (Build Spec section 4.2) */
+  .label-caps {
+    font-size: 12.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+}

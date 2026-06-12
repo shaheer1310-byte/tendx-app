@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "TendX",
+    "slug": "tendx-mobile",
+    "scheme": "tendx",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#0A2540",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0A2540"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "pk.tendx.mobile"
+    },
+    "android": {
+      "package": "pk.tendx.mobile"
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
